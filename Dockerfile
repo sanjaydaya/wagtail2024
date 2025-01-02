@@ -1,60 +1,41 @@
-FROM python:3.12-slim as production
+# Use Python 3.12 slim as the base image
+FROM python:3.12-slim AS production
 
-# Install dependencies in a virtualenv
+# Set environment variables
 ENV VIRTUAL_ENV=/venv
+ENV PATH=$VIRTUAL_ENV/bin:$PATH
+ENV PYTHONUNBUFFERED=1
+ENV DJANGO_SETTINGS_MODULE=mynewssite.settings.production
+ENV PORT=8000
 
+# Create a non-root user and necessary directories
 RUN useradd wagtail --create-home && mkdir /app $VIRTUAL_ENV && chown -R wagtail /app $VIRTUAL_ENV
 
+# Set the working directory
 WORKDIR /app
 
-# Set default environment variables. They are used at build time and runtime.
-# If you specify your own environment variables on Heroku or Dokku, they will
-# override the ones set here. The ones below serve as sane defaults only.
-#  * PATH - Make sure that Poetry is on the PATH, along with our venv
-#  * PYTHONUNBUFFERED - This is useful so Python does not hold any messages
-#    from being output.
-#    https://docs.python.org/3.12/using/cmdline.html#envvar-PYTHONUNBUFFERED
-#    https://docs.python.org/3.12/using/cmdline.html#cmdoption-u
-#  * DJANGO_SETTINGS_MODULE - default settings used in the container.
-#  * PORT - default port used. Please match with EXPOSE so it works on Dokku.
-#    Heroku will ignore EXPOSE and only set PORT variable. PORT variable is
-#    read/used by Gunicorn.
-ENV PATH=$VIRTUAL_ENV/bin:$PATH \
-    PYTHONUNBUFFERED=1 \
-    DJANGO_SETTINGS_MODULE=mynewssite.settings.production \
-    PORT=8000
-
-# Port exposed by this container. Should default to the port used by your WSGI
-# server (Gunicorn).
-EXPOSE 8000
-
+# Install system dependencies
 RUN apt-get update --yes --quiet && apt-get install --yes --quiet --no-install-recommends \
     build-essential \
+    libpq-dev \
     && apt-get autoremove && rm -rf /var/lib/apt/lists/*
 
-# Don't use the root user as it's an anti-pattern
+# Create a virtual environment and install Python dependencies
+RUN python -m venv $VIRTUAL_ENV
+COPY requirements.txt ./requirements.txt
+RUN pip install --no-cache-dir --upgrade pip && pip install --no-cache-dir -r requirements.txt
+
+# Switch to non-root user
 USER wagtail
 
-# Install your app's Python requirements.
-RUN python -m venv $VIRTUAL_ENV
-COPY requirements.txt ./
-RUN pip install --no-cache -r requirements.txt
-
-# Copy application code.
+# Copy project files
 COPY --chown=wagtail . .
 
-# Collect static. This command will move static files from application
-# directories and "static_compiled" folder to the main static directory that
-# will be served by the WSGI server.
+# Collect static files
 RUN SECRET_KEY=none python manage.py collectstatic --noinput --clear
 
-# Runtime command that executes when "docker run" is called, it does the
-# following:
-#   1. Migrate the database.
-#   2. Start the application server.
-# WARNING:
-#   Migrating database at the same time as starting the server IS NOT THE BEST
-#   PRACTICE. The database should be migrated manually or using the release
-#   phase facilities of your hosting platform. This is used only so the
-#   Wagtail instance can be started with a simple "docker run" command.
-CMD set -xe; python manage.py createcachetable; python manage.py migrate --noinput; gunicorn mynewssite.wsgi:application
+# Expose the application port
+EXPOSE 8000
+
+# Command to run the application
+CMD ["gunicorn", "mynewssite.wsgi:application", "--bind", "0.0.0.0:8000"]
